@@ -5,14 +5,22 @@ Fast, efficient AI responses using Google's Gemini API
 
 try:
     import google.generativeai as genai
+    from PIL import Image
+    import requests
+    import io
+    import base64
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
     genai = None
 
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 import json
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 class GeminiChatbot:
     def __init__(self):
@@ -24,9 +32,9 @@ class GeminiChatbot:
         if GEMINI_AVAILABLE and self.api_key:
             try:
                 genai.configure(api_key=self.api_key)
-                self.model = genai.GenerativeModel('gemini-1.5-flash')
+                self.model = genai.GenerativeModel('gemini-2.0-flash')
                 self.initialized = True
-                print("SUCCESS: Gemini Flash Lite initialized successfully!")
+                print("SUCCESS: Gemini 2.0 Flash initialized successfully!")
             except Exception as e:
                 print(f"ERROR: Gemini initialization error: {e}")
                 self.initialized = False
@@ -39,141 +47,163 @@ class GeminiChatbot:
     
     def chat_with_gemini(self, message: str, context: Optional[Dict[str, Any]] = None) -> str:
         """
-        Chat with Gemini Flash Lite model
+        Chat with Gemini model with image support
         """
         if not self.initialized or not self.model:
-            return self._fallback_response(message)
+            print("Gemini not initialized, using fallback")
+            return self._simple_fallback(message)
         
         try:
-            # Create context-aware prompt
-            prompt = self._create_prompt(message, context)
+            print(f"Gemini chat request - Message: {message[:50]}...")
+            print(f"Context: {context}")
             
-            # Generate response
-            response = self.model.generate_content(prompt)
-            
-            if response.text:
-                return response.text.strip()
+            # Check if we have an image to analyze
+            if context and context.get('hasImage') and context.get('imageUrl'):
+                print("Image detected, using image analysis mode")
+                return self._chat_with_image(message, context)
             else:
-                return self._fallback_response(message)
+                print("No image detected, using text-only mode")
+                # Text-only conversation
+                prompt = self._create_prompt(message, context)
+                response = self.model.generate_content(prompt)
                 
+                if response.text:
+                    return response.text.strip()
+                else:
+                    return self._simple_fallback(message)
+                    
         except Exception as e:
             print(f"Gemini API error: {e}")
-            return self._fallback_response(message)
+            import traceback
+            traceback.print_exc()
+            return self._simple_fallback(message)
+    
+    def _chat_with_image(self, message: str, context: Dict[str, Any]) -> str:
+        """
+        Chat with Gemini using image analysis
+        """
+        try:
+            image_url = context.get('imageUrl')
+            print(f"Image analysis requested for: {image_url[:100] if image_url else 'None'}...")
+            
+            if not image_url:
+                return "No image URL provided for analysis."
+            
+            # Download and process the image
+            print("Downloading image...")
+            image_data = self._download_image(image_url)
+            if not image_data:
+                return "Failed to download or process the image. Please check the image URL and try again."
+            
+            # Create image-focused prompt
+            prompt = self._create_image_prompt(message, context)
+            print(f"Generated prompt for image analysis: {len(prompt)} characters")
+            
+            # Generate content with image
+            print("Sending image and prompt to Gemini...")
+            response = self.model.generate_content([prompt, image_data])
+            
+            if response.text:
+                print("Successfully received response from Gemini!")
+                return response.text.strip()
+            else:
+                print("Gemini returned empty response")
+                return "I can see the image, but I'm having trouble analyzing it right now. Could you try asking a more specific question about what you'd like to know?"
+                
+        except Exception as e:
+            print(f"Gemini image analysis error: {e}")
+            import traceback
+            traceback.print_exc()
+            return f"I'm having trouble analyzing the image right now. Error: {str(e)}"
+    
+    def _download_image(self, image_url: str):
+        """
+        Download and prepare image for Gemini analysis
+        """
+        try:
+            print(f"Downloading image from: {image_url[:100]}...")
+            
+            # Handle data URLs (base64 encoded images)
+            if image_url.startswith('data:image'):
+                # Extract base64 data
+                header, data = image_url.split(',', 1)
+                image_bytes = base64.b64decode(data)
+                pil_image = Image.open(io.BytesIO(image_bytes))
+                print(f"Successfully loaded base64 image: {pil_image.size}")
+                return pil_image
+            
+            # Handle regular URLs (Firebase Storage, etc.)
+            elif image_url.startswith('http'):
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
+                response = requests.get(image_url, timeout=30, headers=headers)
+                response.raise_for_status()
+                pil_image = Image.open(io.BytesIO(response.content))
+                print(f"Successfully downloaded image: {pil_image.size}")
+                return pil_image
+            
+            else:
+                print(f"Unsupported image URL format: {image_url[:100]}...")
+                return None
+                
+        except Exception as e:
+            print(f"Error downloading image: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
     
     def _create_prompt(self, message: str, context: Optional[Dict[str, Any]] = None) -> str:
         """
-        Create a context-aware prompt for Gemini
+        Create a context-aware prompt for text-only Gemini chat
         """
-        base_prompt = """You are a helpful AI assistant specializing in historical artifacts, ancient civilizations, and archaeology. 
-You provide accurate, engaging, and educational responses about historical topics.
+        base_prompt = """You are a helpful AI assistant specializing in historical artifacts, ancient civilizations, and archaeology.
 
 User question: {user_message}
 
-Please provide a detailed, informative response about this historical topic. If it's about artifacts, explain their significance, historical context, and cultural importance."""
+IMPORTANT: 
+- For simple questions, give SHORT, direct answers (1-3 sentences)
+- For complex questions, provide detailed analysis
+- Match your response length to the question complexity
+- Always be complete but concise
 
-        if context and context.get('hasImage'):
-            base_prompt += "\n\nNote: The user has uploaded an image. You can provide analysis based on what you might see in historical artifacts or archaeological finds."
-        
-        if context and context.get('imageUrl'):
-            base_prompt += f"\n\nImage URL available: {context['imageUrl']}"
+Answer the question appropriately:"""
         
         return base_prompt.format(user_message=message)
     
-    def _fallback_response(self, message: str) -> str:
+    def _create_image_prompt(self, message: str, context: Dict[str, Any]) -> str:
         """
-        Intelligent fallback response when Gemini is not available
+        Create a specialized prompt for image analysis
         """
-        message_lower = message.lower()
+        processing_type = context.get('processingType', 'processed')
+        session_name = context.get('sessionName', 'session')
         
-        # Historical artifact responses
-        if any(word in message_lower for word in ['artifact', 'ancient', 'historical', 'civilization', 'archaeology']):
-            return """🏛️ **This is a fascinating historical artifact!** 
+        prompt = f"""You are an expert art historian and archaeologist analyzing a historical artifact image.
 
-Ancient civilizations created remarkable objects that tell us so much about their culture, technology, and daily life. These artifacts serve as windows into the past, allowing us to understand how our ancestors lived, worked, and expressed their beliefs.
+User's question: {message}
 
-**Key aspects of historical artifacts:**
-• Cultural significance and symbolism
-• Technological achievements of ancient times
-• Artistic expression and craftsmanship
-• Religious and ceremonial purposes
-• Economic and trade connections
+IMPORTANT INSTRUCTIONS:
+- Answer the SPECIFIC question asked - don't provide unnecessary information
+- For simple questions (like "what language?"), give SHORT, direct answers (1-2 sentences)
+- For complex questions or requests for details, provide comprehensive analysis
+- Always be complete but concise - match your response length to the question complexity
+- If uncertain, say so briefly
 
-Is there a specific aspect of this artifact you'd like me to elaborate on?"""
+Analyze the image and answer the user's question directly and appropriately."""
         
-        # Egyptian civilization responses
-        elif any(word in message_lower for word in ['egypt', 'egyptian', 'pyramid', 'pharaoh', 'hieroglyph']):
-            return """🔺 **Ancient Egypt - The Gift of the Nile!**
+        return prompt
+    
+    def _simple_fallback(self, message: str) -> str:
+        """
+        Simple fallback response when Gemini is not available
+        """
+        return """I'm sorry, but I'm currently unable to access the Gemini AI service. This could be due to:
 
-Ancient Egypt was one of the most remarkable civilizations in history! The Egyptians built incredible monuments like the pyramids, developed a complex writing system with hieroglyphs, and created beautiful art and jewelry. Their civilization lasted for over 3,000 years and left an incredible legacy.
+• Network connectivity issues
+• API service temporarily unavailable  
+• Configuration problems
 
-**Notable achievements:**
-• **Pyramids**: Engineering marvels like the Great Pyramid of Giza
-• **Hieroglyphs**: Complex writing system with over 700 symbols
-• **Mummification**: Advanced preservation techniques
-• **Mathematics**: Developed geometry and astronomy
-• **Medicine**: Advanced surgical techniques
-
-Would you like to know more about their construction techniques or cultural significance?"""
-        
-        # Roman civilization responses
-        elif any(word in message_lower for word in ['roman', 'rome', 'empire', 'gladiator', 'colosseum']):
-            return """🏛️ **The Roman Empire - Masters of the Ancient World!**
-
-The Roman Empire was one of the most powerful and influential civilizations in history! The Romans built incredible infrastructure including roads, aqueducts, and monumental buildings like the Colosseum. Their legal system, engineering, and military tactics still influence modern society.
-
-**Roman achievements:**
-• **Engineering**: Roads, aqueducts, and concrete
-• **Architecture**: Colosseum, Pantheon, and Forum
-• **Military**: Legion system and siege warfare
-• **Law**: Basis for modern legal systems
-• **Government**: Republic and imperial systems
-
-Are you interested in learning about their engineering achievements or cultural contributions?"""
-        
-        # Greek civilization responses
-        elif any(word in message_lower for word in ['greek', 'greece', 'athens', 'sparta', 'philosophy', 'olympic']):
-            return """🏺 **Ancient Greece - The Cradle of Western Civilization!**
-
-Ancient Greece was the birthplace of Western civilization! The Greeks made incredible contributions to philosophy, democracy, mathematics, and the arts. Thinkers like Socrates, Plato, and Aristotle laid the foundations for Western thought, while Greek architecture and sculpture continue to inspire us.
-
-**Greek contributions:**
-• **Philosophy**: Socrates, Plato, Aristotle
-• **Democracy**: Athenian political system
-• **Mathematics**: Geometry, Pythagoras, Euclid
-• **Olympics**: Athletic competitions and games
-• **Arts**: Theater, sculpture, and architecture
-
-What aspect of Greek civilization interests you most?"""
-        
-        # Image analysis responses
-        elif any(word in message_lower for word in ['image', 'picture', 'photo', 'what', 'see', 'analyze']):
-            return """🖼️ **Image Analysis - Historical Perspective**
-
-Based on what I can observe about historical artifacts and archaeological finds, this appears to be a significant piece! Historical artifacts often reveal fascinating details about:
-
-**What to look for:**
-• **Artistic style** and craftsmanship techniques
-• **Materials used** and their cultural significance
-• **Symbols and motifs** that indicate origin
-• **Condition** and preservation state
-• **Historical context** and time period
-
-Could you describe what you see in more detail? I can help analyze the historical significance and cultural context!"""
-        
-        # Default response
-        else:
-            return f"""🤖 **AI Historical Assistant**
-
-I'd be happy to help you with information about "{message}"! This appears to be related to historical artifacts or ancient civilizations. I specialize in topics like:
-
-**My expertise includes:**
-• Ancient civilizations (Egypt, Rome, Greece, etc.)
-• Archaeological discoveries and artifacts
-• Historical analysis and context
-• Cultural significance of historical objects
-• Art and craftsmanship of ancient times
-
-Could you provide more details about what specifically you'd like to know? I'm here to help uncover the fascinating stories behind historical artifacts!"""
+Please try again in a moment, or check that the Gemini API is properly configured. If you uploaded an image, I would normally be able to analyze it and provide detailed historical and archaeological insights."""
 
 # Global instance
 gemini_chatbot = GeminiChatbot()

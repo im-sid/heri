@@ -1,20 +1,34 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useImageProcessing } from '@/hooks/useImageProcessing';
+import { useSearchParams } from 'next/navigation';
+import { 
+  createProcessingSession, 
+  getProcessingSession, 
+  updateProcessingSession,
+  addMessageToProcessingSession,
+  ProcessingSession 
+} from '@/lib/firestore';
+import { uploadImage } from '@/lib/storage';
 import ImageUpload from '@/components/chatbot/ImageUpload';
 import ImageComparison from '@/components/chatbot/ImageComparison';
 import ProgressBar from '@/components/chatbot/ProgressBar';
 import ProtectedRoute from '@/components/ProtectedRoute';
-import { Download, Zap, RefreshCw, Send, Sparkles } from 'lucide-react';
+import { Download, Zap, RefreshCw, Send, Sparkles, Save, Loader } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useGalleryRefresh } from '@/hooks/useGalleryRefresh';
 
 
 const ChatbotPageContent = () => {
   const { user } = useAuth();
   const { processImage, loading } = useImageProcessing();
+  const searchParams = useSearchParams();
+  const sessionId = searchParams.get('sessionId');
+  const { triggerRefresh } = useGalleryRefresh();
   
+  const [currentSession, setCurrentSession] = useState<ProcessingSession | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [currentImageUrl, setCurrentImageUrl] = useState<string | null>(null);
   const [processedImageUrl, setProcessedImageUrl] = useState<string | null>(null);
@@ -22,16 +36,154 @@ const ChatbotPageContent = () => {
   const [progress, setProgress] = useState(0);
   const [progressStatus, setProgressStatus] = useState('');
   const [messages, setMessages] = useState<Array<{role: 'user' | 'assistant', content: string}>>([
-    { role: 'assistant', content: 'Hi! I\'m your AI assistant powered by Gemini Flash Lite. Upload an image and ask me questions about artifacts, civilizations, or historical topics!' }
+    { role: 'assistant', content: 'What can I help with?' }
   ]);
   const [inputMessage, setInputMessage] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
+  const [sessionLoading, setSessionLoading] = useState(false);
+
+  // Load existing session if sessionId is provided
+  useEffect(() => {
+    if (sessionId && user) {
+      loadSession();
+    }
+  }, [sessionId, user]);
+
+  const loadSession = async () => {
+    if (!sessionId || !user) return;
+    
+    setSessionLoading(true);
+    try {
+      const session = await getProcessingSession(sessionId);
+      if (session && session.userId === user.uid) {
+        setCurrentSession(session);
+        setCurrentImageUrl(session.originalImageUrl);
+        setProcessedImageUrl(session.processedImageUrl || null);
+        
+        // Load chat messages
+        if (session.chatMessages && session.chatMessages.length > 0) {
+          const chatMessages = session.chatMessages.map(msg => ({
+            role: msg.role,
+            content: msg.content
+          }));
+          setMessages([
+            { role: 'assistant', content: `✅ Session "${session.name}" loaded! Continue where you left off.${session.processingType ? ` Processing: ${session.processingType.replace('-', ' ')}` : ''}` },
+            ...chatMessages
+          ]);
+        } else {
+          // No chat messages, just show welcome message
+          setMessages([
+            { role: 'assistant', content: `✅ Session "${session.name}" loaded! ${session.processedImageUrl ? 'Your processed image is ready.' : 'Upload an image to continue processing.'}` }
+          ]);
+        }
+        
+        toast.success(`Session "${session.name}" loaded!`);
+      } else {
+        toast.error('Session not found or access denied');
+      }
+    } catch (error) {
+      console.error('Error loading session:', error);
+      toast.error('Failed to load session');
+    } finally {
+      setSessionLoading(false);
+    }
+  };
+
+  const saveSession = async () => {
+    if (!user || !currentImageUrl) {
+      toast.error('Please upload an image first');
+      return;
+    }
+
+    if (!processedImageUrl) {
+      toast.error('Please process the image first (Super-Resolution or Restoration)');
+      return;
+    }
+
+    const sessionName = prompt('Enter a name for this session:', currentSession?.name || 'AI Lab Session');
+    if (!sessionName) return;
+
+    const toastId = toast.loading('Saving session...');
+    
+    try {
+      let imageUrl = currentImageUrl;
+      let processedUrl = processedImageUrl;
+
+      // Upload images to storage if they're blob URLs
+      if (selectedFile && currentImageUrl.startsWith('blob:')) {
+        imageUrl = await uploadImage(selectedFile, user.uid, 'processing-sessions');
+      }
+
+      // Convert messages to the correct format
+      const chatMessages = messages.slice(1).map(msg => ({
+        userId: user.uid,
+        role: msg.role as 'user' | 'assistant',
+        content: msg.content,
+        createdAt: new Date() as any
+      }));
+
+      if (currentSession?.id) {
+        // Update existing session
+        await updateProcessingSession(currentSession.id, {
+          name: sessionName,
+          originalImageUrl: imageUrl,
+          processedImageUrl: processedUrl || undefined,
+          chatMessages: chatMessages,
+          isActive: true
+        });
+        
+        setCurrentSession(prev => prev ? { ...prev, name: sessionName } : null);
+        toast.success('Session updated!', { id: toastId });
+        triggerRefresh(); // Notify gallery to refresh
+      } else {
+        // Determine processing type based on current session or processed image
+        let processingType: 'super-resolution' | 'restoration' | undefined = undefined;
+        if (currentSession?.processingType) {
+          processingType = currentSession.processingType;
+        } else if (processedUrl) {
+          // Default to super-resolution if we have a processed image but no type
+          processingType = 'super-resolution';
+        }
+
+        // Create new session
+        const sessionData = {
+          userId: user.uid,
+          name: sessionName,
+          description: `AI Lab session - ${processingType ? processingType.replace('-', ' ') : 'image analysis'}`,
+          originalImageUrl: imageUrl,
+          processedImageUrl: processedUrl || undefined,
+          processingType: processingType,
+          chatMessages: chatMessages,
+          tags: ['ai-lab', 'processing', ...(processingType ? [processingType] : [])],
+          isActive: true
+        };
+
+        const newSessionId = await createProcessingSession(sessionData);
+        setCurrentSession({ ...sessionData, id: newSessionId } as ProcessingSession);
+        
+        // Update URL to include session ID
+        window.history.replaceState({}, '', `/chatbot?sessionId=${newSessionId}`);
+        
+        toast.success('Session saved!', { id: toastId });
+      }
+    } catch (error) {
+      console.error('Error saving session:', error);
+      toast.error('Failed to save session', { id: toastId });
+    }
+  };
 
   const handleImageSelect = async (file: File) => {
     setSelectedFile(file);
     const imageUrl = URL.createObjectURL(file);
     setCurrentImageUrl(imageUrl);
     setProcessedImageUrl(null);
+    
+    // Add message when image is received
+    setMessages(prev => [...prev, { 
+      role: 'assistant', 
+      content: '📸 Image received! Do you want to know anything about it?' 
+    }]);
+    
     toast.success('Image uploaded! Auto-analyzing...');
     
     // AUTO-ANALYZE IMAGE AND GET WIKIPEDIA INFO
@@ -49,38 +201,25 @@ const ChatbotPageContent = () => {
         const data = await response.json();
         
         if (data.success && data.analysis) {
-          // Add automatic analysis to chat
-          let autoMessage = `🔍 **Automatic Image Analysis**\n\n`;
+          // Add automatic analysis to chat - only if there's meaningful info
+          let autoMessage = '';
           
           if (data.analysis.detected_type) {
-            autoMessage += `**Detected Type:** ${data.analysis.detected_type}\n\n`;
+            autoMessage += `🔍 Detected: ${data.analysis.detected_type}\n\n`;
           }
           
           if (data.analysis.wikipedia_info) {
             const wiki = data.analysis.wikipedia_info;
-            autoMessage += `📚 **Wikipedia Information**\n`;
-            autoMessage += `**Title:** ${wiki.title}\n\n`;
+            autoMessage += `📚 **${wiki.title}**\n\n`;
             autoMessage += `${wiki.summary}\n\n`;
-            autoMessage += `🔗 [Read more on Wikipedia](${wiki.url})\n\n`;
+            autoMessage += `🔗 [Read more](${wiki.url})`;
           }
           
-          if (data.analysis.suggestions) {
-            autoMessage += `**💡 Suggestions:**\n`;
-            data.analysis.suggestions.forEach((suggestion: string) => {
-              autoMessage += `${suggestion}\n`;
-            });
-            autoMessage += `\n`;
+          // Only add message if there's content
+          if (autoMessage.trim()) {
+            setMessages(prev => [...prev, { role: 'assistant', content: autoMessage }]);
+            toast.success('Analysis complete!');
           }
-          
-          if (data.analysis.automatic_prompts) {
-            autoMessage += `**❓ Ask me:**\n`;
-            data.analysis.automatic_prompts.slice(0, 5).forEach((prompt: string) => {
-              autoMessage += `• ${prompt}\n`;
-            });
-          }
-          
-          setMessages(prev => [...prev, { role: 'assistant', content: autoMessage }]);
-          toast.success('Auto-analysis complete!');
         }
       };
       reader.readAsDataURL(file);
@@ -127,6 +266,26 @@ const ChatbotPageContent = () => {
     if (result) {
       toast.success('Super-Resolution complete!', { id: toastId });
       setProcessedImageUrl(result.processedImageUrl);
+      
+      // Show save notification
+      setTimeout(() => {
+        toast.success('💾 You can now save this session to your gallery!', {
+          duration: 4000,
+          style: { fontSize: '14px' }
+        });
+      }, 1000);
+      
+      // Update session with processed image
+      if (currentSession?.id) {
+        try {
+          await updateProcessingSession(currentSession.id, {
+            processedImageUrl: result.processedImageUrl,
+            processingType: 'super-resolution'
+          });
+        } catch (error) {
+          console.error('Error updating session:', error);
+        }
+      }
     } else {
       toast.error('Enhancement failed. Please try again.', { id: toastId });
     }
@@ -164,6 +323,26 @@ const ChatbotPageContent = () => {
     if (result) {
       toast.success('Restoration complete!', { id: toastId });
       setProcessedImageUrl(result.processedImageUrl);
+      
+      // Show save notification
+      setTimeout(() => {
+        toast.success('💾 You can now save this session to your gallery!', {
+          duration: 4000,
+          style: { fontSize: '14px' }
+        });
+      }, 1000);
+      
+      // Update session with processed image
+      if (currentSession?.id) {
+        try {
+          await updateProcessingSession(currentSession.id, {
+            processedImageUrl: result.processedImageUrl,
+            processingType: 'restoration'
+          });
+        } catch (error) {
+          console.error('Error updating session:', error);
+        }
+      }
     } else {
       toast.error('Restoration failed. Please try again.', { id: toastId });
     }
@@ -181,6 +360,29 @@ const ChatbotPageContent = () => {
     toast.success('Download started!');
   };
 
+  const convertImageToBase64 = async (imageUrl: string): Promise<string | null> => {
+    try {
+      // If it's already a data URL, return as is
+      if (imageUrl.startsWith('data:')) {
+        return imageUrl;
+      }
+      
+      // Convert Firebase Storage URL or other URLs to base64
+      const response = await fetch(imageUrl);
+      const blob = await response.blob();
+      
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(blob);
+      });
+    } catch (error) {
+      console.error('Error converting image to base64:', error);
+      return null;
+    }
+  };
+
   const handleSendMessage = async () => {
     if (!inputMessage.trim()) return;
     
@@ -189,32 +391,105 @@ const ChatbotPageContent = () => {
     setMessages(prev => [...prev, { role: 'user', content: userMsg }]);
     setChatLoading(true);
 
+    // Save user message to session if exists
+    if (currentSession?.id && user) {
+      try {
+        await addMessageToProcessingSession(currentSession.id, {
+          userId: user.uid,
+          role: 'user',
+          content: userMsg
+        });
+      } catch (error) {
+        console.error('Error saving user message:', error);
+      }
+    }
+
     try {
-      // Use the historical-info endpoint with Gemini integration
-      const response = await fetch('http://localhost:5000/api/historical-info', {
+      let apiEndpoint = 'http://localhost:5000/api/historical-info';
+      let requestBody: any = {
+        query: userMsg,
+        artifact_type: 'artifact',
+        context: { 
+          hasImage: !!(processedImageUrl || currentImageUrl),
+          imageUrl: processedImageUrl || currentImageUrl || ''
+        }
+      };
+
+      // If we have a processed image, use Gemini for visual analysis
+      if (processedImageUrl) {
+        console.log('Using Gemini for image analysis...');
+        apiEndpoint = 'http://localhost:5000/api/gemini-chat';
+        
+        // Convert image to base64 for Gemini
+        let imageUrlForAnalysis = processedImageUrl;
+        if (!processedImageUrl.startsWith('data:')) {
+          console.log('Converting processed image to base64...');
+          const base64Image = await convertImageToBase64(processedImageUrl);
+          if (base64Image) {
+            imageUrlForAnalysis = base64Image;
+            console.log('Successfully converted image to base64');
+          }
+        }
+
+        requestBody = {
+          message: userMsg,
+          context: {
+            hasImage: true,
+            imageUrl: imageUrlForAnalysis,
+            imageMode: true,
+            processingType: currentSession?.processingType || 'super-resolution',
+            sessionName: currentSession?.name || 'AI Lab Session',
+            previousMessages: messages.slice(-5)
+          }
+        };
+      }
+
+      console.log(`Sending request to ${apiEndpoint}:`, requestBody);
+
+      const response = await fetch(apiEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query: userMsg,
-          artifact_type: 'artifact',
-          context: { 
-            hasImage: !!(processedImageUrl || currentImageUrl),
-            imageUrl: processedImageUrl || currentImageUrl || ''
-          }
-        })
+        body: JSON.stringify(requestBody)
       });
 
       const data = await response.json();
       setChatLoading(false);
 
-      if (data.information) {
-        setMessages(prev => [...prev, { role: 'assistant', content: data.information }]);
-      } else {
-        setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, I couldn\'t process that. Please try again.' }]);
+      const aiResponse = data.response || data.information || 'Sorry, I couldn\'t process that. Please try again.';
+      setMessages(prev => [...prev, { role: 'assistant', content: aiResponse }]);
+
+      // Save AI response to session if exists
+      if (currentSession?.id && user) {
+        try {
+          await addMessageToProcessingSession(currentSession.id, {
+            userId: user.uid,
+            role: 'assistant',
+            content: aiResponse
+          });
+          
+          // Auto-save session after every few messages
+          const messageCount = messages.length + 1; // +1 for the new message
+          if (messageCount % 5 === 0) {
+            // Auto-save every 5 messages
+            await updateProcessingSession(currentSession.id, {
+              isActive: true,
+              description: `AI Lab session - ${messageCount} messages exchanged`
+            });
+            
+            // Show subtle auto-save notification
+            toast.success('💾 Session auto-saved', { 
+              duration: 2000,
+              style: { fontSize: '12px' }
+            });
+          }
+        } catch (error) {
+          console.error('Error saving AI message:', error);
+        }
       }
     } catch (error) {
       setChatLoading(false);
-      setMessages(prev => [...prev, { role: 'assistant', content: 'Error connecting to AI. Please check if backend is running.' }]);
+      const errorMsg = 'Error connecting to AI. Please check if backend is running.';
+      setMessages(prev => [...prev, { role: 'assistant', content: errorMsg }]);
     }
   };
 
@@ -225,12 +500,33 @@ const ChatbotPageContent = () => {
         
         {/* Header */}
         <div className="text-center mb-12">
-          <h1 className="text-5xl font-bold mb-4 text-glow-copper">
-            Heri-Science AI Lab
-          </h1>
-          <p className="text-xl text-gray-400">
-            Professional Image Enhancement for Historical Artifacts
-          </p>
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex-1"></div>
+            <div className="flex-1">
+              <h1 className="text-5xl font-bold mb-4 text-glow-copper">
+                {currentSession ? currentSession.name : 'Heri-Science AI Lab'}
+              </h1>
+              <p className="text-xl text-gray-400">
+                Professional Image Enhancement for Historical Artifacts
+              </p>
+            </div>
+            <div className="flex-1 flex justify-end">
+              {user && processedImageUrl && (
+                <button
+                  onClick={saveSession}
+                  disabled={sessionLoading}
+                  className="px-6 py-3 bg-green-600 hover:bg-green-700 rounded-lg transition-colors flex items-center gap-2 disabled:opacity-50"
+                >
+                  {sessionLoading ? (
+                    <Loader className="w-5 h-5 animate-spin" />
+                  ) : (
+                    <Save className="w-5 h-5" />
+                  )}
+                  {currentSession ? 'Save to Gallery' : 'Save to Gallery'}
+                </button>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* STEP 1: Upload */}
@@ -397,6 +693,8 @@ const ChatbotPageContent = () => {
                 Download Enhanced Image
               </button>
               
+
+              
               <button
                 onClick={() => {
                   setProcessedImageUrl(null);
@@ -420,20 +718,38 @@ const ChatbotPageContent = () => {
                 <Sparkles className="w-6 h-6 text-white" />
               </div>
               <div>
-                <h2 className="text-2xl font-bold text-glow-cyan">Gemini AI Assistant</h2>
-                <p className="text-sm text-gray-400">Powered by Gemini Flash Lite - Ask me anything about your images</p>
+                <h2 className="text-2xl font-bold text-glow-cyan">
+                  {processedImageUrl ? 'Gemini AI Assistant' : 'AI Assistant'}
+                </h2>
+                <p className="text-sm text-gray-400">
+                  {processedImageUrl 
+                    ? 'Powered by Gemini Vision - Analyzing your enhanced image'
+                    : 'Upload and process an image to enable Gemini visual analysis'
+                  }
+                </p>
               </div>
             </div>
           </div>
 
           {/* Chat Messages */}
           <div className="h-[400px] overflow-y-auto bg-dark/30 p-6 space-y-4">
+            {processedImageUrl && (
+              <div className="text-center py-2">
+                <div className="inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500/20 to-green-500/20 border border-blue-500/30 rounded-full text-sm">
+                  <Sparkles className="w-4 h-4 text-blue-400 animate-pulse" />
+                  <span className="text-blue-300">Gemini Vision AI Active - Ask about your enhanced image</span>
+                </div>
+              </div>
+            )}
+            
             {messages.map((msg, idx) => (
               <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div className={`max-w-[80%] p-4 rounded-lg ${
                   msg.role === 'user' 
                     ? 'bg-primary/20 border border-primary/50' 
-                    : 'bg-gradient-to-r from-purple-500/10 to-blue-500/10 border border-purple-500/30'
+                    : processedImageUrl 
+                      ? 'bg-gradient-to-r from-blue-500/10 to-green-500/10 border border-blue-500/30'
+                      : 'bg-gradient-to-r from-purple-500/10 to-blue-500/10 border border-purple-500/30'
                 }`}>
                   <p className="text-sm text-gray-300 whitespace-pre-wrap">{msg.content}</p>
                 </div>
@@ -460,7 +776,10 @@ const ChatbotPageContent = () => {
                 value={inputMessage}
                 onChange={(e) => setInputMessage(e.target.value)}
                 onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-                placeholder="Ask me about the image, artifact history, or anything..."
+                placeholder={processedImageUrl 
+                  ? "Ask Gemini about this enhanced image: What do you see? What's its significance?"
+                  : "Ask me about the image, artifact history, or anything..."
+                }
                 className="flex-1 px-4 py-3 bg-dark-lighter border border-secondary/30 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 transition-colors"
                 disabled={chatLoading}
               />
@@ -487,7 +806,13 @@ const ChatbotPageContent = () => {
 const ChatbotPage = () => {
   return (
     <ProtectedRoute>
-      <ChatbotPageContent />
+      <Suspense fallback={
+        <div className="min-h-screen flex items-center justify-center bg-dark">
+          <Loader className="w-12 h-12 animate-spin text-primary" />
+        </div>
+      }>
+        <ChatbotPageContent />
+      </Suspense>
     </ProtectedRoute>
   );
 };

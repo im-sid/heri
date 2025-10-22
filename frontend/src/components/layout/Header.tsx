@@ -62,6 +62,14 @@ const Header = () => {
                     <Sparkles className="w-4 h-4" />
                     <span>Sci-Fi Mode</span>
                   </Link>
+                  
+                  <Link
+                    href="/gemini-chat"
+                    className="hidden sm:flex items-center space-x-1 font-sans text-sm hover:text-green-400 transition-colors duration-300"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    <span>Gemini Chat</span>
+                  </Link>
                 
                 {userProfile?.role === 'admin' && (
                   <Link

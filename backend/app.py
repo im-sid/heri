@@ -258,6 +258,161 @@ def get_historical_info_endpoint():
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/scifi-story-generate', methods=['POST'])
+def generate_scifi_story():
+    """Generate sci-fi story concepts from artifacts"""
+    try:
+        data = request.json
+        image_url = data.get('imageUrl', '')
+        prompt = data.get('prompt', 'Generate a creative sci-fi story concept')
+        session_id = data.get('sessionId')
+        genres = data.get('genres', ['science-fiction'])
+        customization = data.get('customization', '')
+        
+        # Genre-specific descriptions
+        genre_descriptions = {
+            'science-fiction': 'classic science fiction with advanced technology',
+            'cyberpunk': 'cyberpunk with high-tech, low-life themes and corporate dystopia',
+            'space-opera': 'epic space opera with galactic empires and space battles',
+            'dystopian': 'dystopian future with oppressive societies',
+            'time-travel': 'time travel with temporal paradoxes',
+            'alien-contact': 'first contact with alien civilizations',
+            'post-apocalyptic': 'post-apocalyptic survival and rebuilding',
+            'steampunk': 'steampunk with Victorian aesthetics and steam technology',
+            'hard-sci-fi': 'hard science fiction with realistic scientific accuracy',
+            'soft-sci-fi': 'soft science fiction focusing on social sciences',
+            'military-sci-fi': 'military science fiction with warfare and tactics',
+            'biopunk': 'biopunk with biotechnology and genetic modification',
+            'nanopunk': 'nanopunk with nanotechnology',
+            'solarpunk': 'solarpunk with sustainable technology and optimistic futures',
+            'dieselpunk': 'dieselpunk with diesel-era technology',
+            'atompunk': 'atompunk with atomic age aesthetics',
+            'retrofuturism': 'retrofuturism with vintage future visions',
+            'climate-fiction': 'climate fiction addressing environmental change',
+            'generation-ship': 'generation ship narratives with multi-generational space travel',
+            'first-contact': 'first contact scenarios with alien species',
+            'parallel-universe': 'parallel universe with alternate realities',
+            'virtual-reality': 'virtual reality and simulated worlds',
+            'artificial-intelligence': 'AI and robotics with machine consciousness',
+            'genetic-engineering': 'genetic engineering and designer biology',
+            'colonization': 'space colonization and terraforming'
+        }
+        
+        # Build genre description
+        genre_descs = [genre_descriptions.get(g, g) for g in genres]
+        genres_text = ', '.join(genre_descs)
+        customization_text = f"\n\nUser's specific preferences: {customization}" if customization else ""
+        
+        # Create sci-fi focused prompt with multiple genres
+        scifi_prompt = f"""You are a creative sci-fi writer and futurist. Based on this historical artifact image, create an engaging story concept that blends these genres: {genres_text}.
+
+{prompt}{customization_text}
+
+Please provide:
+1. **Historical Context**: Brief background of the artifact
+2. **Genre Fusion**: How this artifact could be reimagined blending {genres_text}
+3. **Story Concept**: A compelling narrative hook that combines elements from all selected genres
+4. **Technology/World Element**: Advanced technology or world-building that fits the genre blend
+5. **Character Hook**: Potential protagonist or conflict that works with the genre combination
+
+Make it creative, engaging, and seamlessly blend the selected genres. Focus on "what if" scenarios that merge historical fact with speculative fiction."""
+
+        # Use Gemini for creative writing
+        story_idea = chat_with_gemini(scifi_prompt, {
+            'hasImage': True,
+            'imageUrl': image_url,
+            'mode': 'creative_writing',
+            'genres': genres
+        })
+        
+        return jsonify({
+            'success': True,
+            'storyIdea': story_idea,
+            'messageType': 'story_concept',
+            'genres': genres
+        })
+    
+    except Exception as e:
+        print(f"Error generating sci-fi story: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/scifi-chat', methods=['POST'])
+def scifi_chat():
+    """Chat interface for sci-fi story development"""
+    try:
+        data = request.json
+        message = data.get('message', '')
+        session_id = data.get('sessionId')
+        context = data.get('context', {})
+        previous_messages = context.get('previousMessages', [])
+        
+        # Build context from previous messages
+        conversation_context = ""
+        if previous_messages:
+            conversation_context = "\n\nPrevious conversation:\n"
+            for msg in previous_messages[-3:]:  # Last 3 messages
+                role = "Human" if msg.get('role') == 'user' else "Assistant"
+                conversation_context += f"{role}: {msg.get('content', '')[:200]}...\n"
+        
+        # Create sci-fi writing assistant prompt
+        scifi_prompt = f"""You are an expert sci-fi writing assistant and creative partner. Help the user develop their science fiction story based on historical artifacts.
+
+User's request: {message}
+
+{conversation_context}
+
+Provide helpful, creative responses for:
+- Story development and plot ideas
+- Character creation and development  
+- World-building and setting details
+- Scientific concepts and technology
+- Plot twists and narrative hooks
+- Writing techniques and style advice
+
+Keep responses engaging, creative, and focused on science fiction storytelling. Use markdown formatting for better readability."""
+
+        # Get AI response
+        response = chat_with_gemini(scifi_prompt, context)
+        
+        # Determine message type based on content
+        message_type = 'story_concept'
+        if any(word in message.lower() for word in ['character', 'protagonist', 'villain']):
+            message_type = 'character_development'
+        elif any(word in message.lower() for word in ['world', 'setting', 'planet', 'society']):
+            message_type = 'world_building'
+        elif any(word in message.lower() for word in ['plot', 'twist', 'ending', 'conflict']):
+            message_type = 'plot_twist'
+        
+        return jsonify({
+            'success': True,
+            'response': response,
+            'messageType': message_type
+        })
+    
+    except Exception as e:
+        print(f"Error in sci-fi chat: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/gemini-chat', methods=['POST'])
+def gemini_chat_endpoint():
+    """Direct Gemini chat endpoint with image analysis support"""
+    try:
+        data = request.json
+        message = data.get('message', '')
+        context = data.get('context', {})
+        
+        # Use Gemini with full context (including image if available)
+        response = chat_with_gemini(message, context)
+        
+        return jsonify({
+            'success': True,
+            'response': response
+        })
+    
+    except Exception as e:
+        print(f"Error in Gemini chat: {e}")
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     print("\n" + "="*50)
     print("Heri-Science Backend Server")

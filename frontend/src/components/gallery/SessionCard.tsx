@@ -71,11 +71,23 @@ const SessionCard: React.FC<SessionCardProps> = ({
             )}
           </div>
           
-          {/* Continue Indicator */}
-          <div className="absolute top-2 left-2 px-2 py-1 bg-green-500/90 text-white rounded-full text-xs font-bold flex items-center gap-1">
-            <Play className="w-3 h-3" />
-            <span className="hidden sm:inline">Continue</span>
-          </div>
+          {/* New Session Indicator - Show if created within last 5 minutes */}
+          {(() => {
+            const createdAt = (session as any).createdAt?.toDate?.() || new Date();
+            const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+            const isNew = createdAt > fiveMinutesAgo;
+            
+            return isNew ? (
+              <div className="absolute top-2 left-2 px-2 py-1 bg-green-500/90 text-white rounded-full text-xs font-bold animate-pulse">
+                NEW
+              </div>
+            ) : (
+              <div className="absolute top-2 left-2 px-2 py-1 bg-green-500/90 text-white rounded-full text-xs font-bold flex items-center gap-1">
+                <Play className="w-3 h-3" />
+                <span className="hidden sm:inline">Continue</span>
+              </div>
+            );
+          })()}
           
           {/* Messages indicator */}
           {getSessionMessages(session) && getSessionMessages(session).length > 0 && (
@@ -151,12 +163,27 @@ const SessionCard: React.FC<SessionCardProps> = ({
               <span className="ml-2 flex-shrink-0">{getSessionMessages(session)?.length || 0} msgs</span>
             </div>
             
+            <div className="flex items-center justify-between text-xs text-wheat/40">
+              <span className="truncate">
+                Updated: {(session as any).updatedAt?.toDate?.()?.toLocaleDateString() || 
+                         (session as any).createdAt?.toDate?.()?.toLocaleDateString() || 
+                         'Recently'}
+              </span>
+            </div>
+            
             <div className="text-xs text-green-400 font-semibold">
               {session.sessionType === 'scifi' 
                 ? '✨ Continue writing'
                 : '🔬 Continue analysis'
               }
             </div>
+            
+            {/* Processing status for AI Lab sessions */}
+            {session.sessionType === 'processing' && (session as any).processingType && (
+              <div className="text-xs text-blue-400 font-medium">
+                📸 {(session as any).processingType === 'super-resolution' ? 'Enhanced' : 'Restored'}
+              </div>
+            )}
             
             {session.tags && session.tags.length > 0 && (
               <div className="flex flex-wrap gap-1">

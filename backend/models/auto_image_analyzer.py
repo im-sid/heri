@@ -140,28 +140,13 @@ class AutoImageAnalyzer:
         """
         Generate helpful suggestions for the user
         """
-        return [
-            "💡 Upload clear, high-resolution images for best results",
-            "🔍 Try different enhancement modes for various artifact types",
-            "📚 Ask questions about the historical context of your artifacts",
-            "🎨 Use the comparison slider to see enhancement details",
-            "💾 Download enhanced images for your research or collection"
-        ]
+        return []  # No hardcoded suggestions
     
     def _generate_prompts(self) -> List[str]:
         """
         Generate automatic prompts for the chatbot
         """
-        return [
-            "What civilization created this artifact?",
-            "What is the historical significance of this piece?",
-            "Tell me about the time period this is from",
-            "What materials were used to create this?",
-            "How was this artifact discovered?",
-            "What can we learn from this about ancient culture?",
-            "Are there similar artifacts in other museums?",
-            "What techniques were used to create this?"
-        ]
+        return []  # No hardcoded prompts
 
 # Global instance
 auto_analyzer = AutoImageAnalyzer()

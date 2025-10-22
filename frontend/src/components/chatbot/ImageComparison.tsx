@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import Image from 'next/image';
-import { Download, Maximize2 } from 'lucide-react';
+import { Download, Maximize2, Sparkles } from 'lucide-react';
 
 interface ImageComparisonProps {
   originalImage: string;
@@ -122,6 +122,14 @@ const ImageComparison: React.FC<ImageComparisonProps> = ({
           <div className="w-3 h-3 bg-primary rounded-full"></div>
           <span className="text-primary">Enhanced (Right)</span>
         </div>
+      </div>
+
+      {/* Note about integrated Gemini analysis */}
+      <div className="mt-4 text-center">
+        <p className="text-sm text-blue-400 flex items-center justify-center gap-2">
+          <Sparkles className="w-4 h-4" />
+          Gemini AI analysis is now integrated in the chat below
+        </p>
       </div>
     </div>
   );
